@@ -2,7 +2,7 @@
 """
 YouTube 영상 수집기
 - 지정된 채널에서 전날 자정~당일 자정(KST) 사이 업로드된 영상(Shorts 제외) 수집
-- Excel로 저장 후 Google Drive에 업로드
+- Excel로 저장 후 Google Drive에 업로드 (OAuth 리프레시 토큰 사용)
 """
 
 import os
@@ -14,7 +14,8 @@ from pathlib import Path
 import isodate
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -22,9 +23,11 @@ from openpyxl.utils import get_column_letter
 # ──────────────────────────────────────────────
 # 환경변수 (GitHub Secrets에서 주입)
 # ──────────────────────────────────────────────
-YOUTUBE_API_KEY          = os.environ["YOUTUBE_API_KEY"]
-GDRIVE_CREDENTIALS_JSON  = os.environ["GDRIVE_CREDENTIALS"]   # Service Account JSON 전체
-GDRIVE_FOLDER_ID         = os.environ.get("GDRIVE_FOLDER_ID", "")  # 비워두면 자동 생성
+YOUTUBE_API_KEY     = os.environ["YOUTUBE_API_KEY"]
+GDRIVE_CLIENT_ID    = os.environ["GDRIVE_CLIENT_ID"]
+GDRIVE_CLIENT_SECRET = os.environ["GDRIVE_CLIENT_SECRET"]
+GDRIVE_REFRESH_TOKEN = os.environ["GDRIVE_REFRESH_TOKEN"]
+GDRIVE_FOLDER_ID    = os.environ.get("GDRIVE_FOLDER_ID", "")
 
 # ──────────────────────────────────────────────
 # 수집 대상 채널 핸들 (@ 제외)
@@ -56,10 +59,15 @@ def get_youtube():
 
 
 def get_drive():
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(GDRIVE_CREDENTIALS_JSON),
+    creds = Credentials(
+        token=None,
+        refresh_token=GDRIVE_REFRESH_TOKEN,
+        client_id=GDRIVE_CLIENT_ID,
+        client_secret=GDRIVE_CLIENT_SECRET,
+        token_uri="https://oauth2.googleapis.com/token",
         scopes=["https://www.googleapis.com/auth/drive"],
     )
+    creds.refresh(Request())
     return build("drive", "v3", credentials=creds)
 
 
@@ -67,7 +75,6 @@ def get_drive():
 # YouTube 헬퍼
 # ──────────────────────────────────────────────
 def get_channel_info(yt, handle: str):
-    """핸들 -> (channel_id, channel_name, uploads_playlist_id)"""
     resp = yt.channels().list(
         part="id,snippet,contentDetails",
         forHandle=handle,
@@ -75,7 +82,7 @@ def get_channel_info(yt, handle: str):
 
     items = resp.get("items", [])
     if not items:
-        print(f"  ⚠️  채널 없음: @{handle}")
+        print(f"  채널 없음: @{handle}")
         return None, None, None
 
     ch = items[0]
@@ -87,7 +94,6 @@ def get_channel_info(yt, handle: str):
 
 
 def fetch_recent_video_ids(yt, playlist_id: str, since: datetime.datetime, until: datetime.datetime):
-    """업로드 재생목록에서 [since, until) 범위 영상 수집."""
     results = []
     page_token = None
 
@@ -130,7 +136,6 @@ def fetch_recent_video_ids(yt, playlist_id: str, since: datetime.datetime, until
 
 
 def get_durations(yt, video_ids: list) -> dict:
-    """영상 ID 목록 -> {id: 재생시간(초)}"""
     durations = {}
     for i in range(0, len(video_ids), 50):
         batch = video_ids[i : i + 50]
@@ -149,7 +154,6 @@ def get_durations(yt, video_ids: list) -> dict:
 
 
 def is_short(duration_secs: int) -> bool:
-    """60초 이하는 Shorts로 판별"""
     return duration_secs <= 60
 
 
@@ -160,27 +164,27 @@ def collect():
     yt = get_youtube()
     now_kst = datetime.datetime.now(KST)
 
-    today_midnight      = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    yesterday_midnight  = today_midnight - datetime.timedelta(days=1)
+    today_midnight     = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_midnight = today_midnight - datetime.timedelta(days=1)
 
     since = yesterday_midnight.astimezone(datetime.timezone.utc)
     until = today_midnight.astimezone(datetime.timezone.utc)
     date_label = yesterday_midnight.strftime("%Y-%m-%d")
 
-    print(f"📅 수집 기간(KST): {yesterday_midnight.strftime('%Y-%m-%d 00:00')} ~ {today_midnight.strftime('%Y-%m-%d 00:00')}")
-    print(f"   (UTC: {since.strftime('%Y-%m-%d %H:%M')} ~ {until.strftime('%Y-%m-%d %H:%M')})\n")
+    print(f"수집 기간(KST): {yesterday_midnight.strftime('%Y-%m-%d 00:00')} ~ {today_midnight.strftime('%Y-%m-%d 00:00')}")
+    print(f"(UTC: {since.strftime('%Y-%m-%d %H:%M')} ~ {until.strftime('%Y-%m-%d %H:%M')})\n")
 
     all_videos = []
 
     for handle in CHANNEL_HANDLES:
-        print(f"🔍 @{handle}")
+        print(f"@{handle}")
         _, ch_name, playlist_id = get_channel_info(yt, handle)
         if not playlist_id:
             continue
 
         videos = fetch_recent_video_ids(yt, playlist_id, since, until)
         if not videos:
-            print("   -> 영상 없음")
+            print("  -> 영상 없음")
             continue
 
         durations = get_durations(yt, [v["id"] for v in videos])
@@ -188,7 +192,7 @@ def collect():
         for v in videos:
             secs = durations.get(v["id"], 0)
             if is_short(secs):
-                print(f"   Shorts 제외: {v['title'][:45]}")
+                print(f"  [Shorts 제외] {v['title'][:45]}")
                 continue
 
             pub_kst = v["published_at"].astimezone(KST)
@@ -200,7 +204,7 @@ def collect():
                 "published_kst":  pub_kst.strftime("%Y-%m-%d %H:%M:%S"),
                 "duration_sec":   secs,
             })
-            print(f"   + {v['title'][:55]}")
+            print(f"  + {v['title'][:55]}")
 
     print(f"\n총 {len(all_videos)}개 영상 수집 완료")
     return all_videos, date_label
@@ -306,9 +310,14 @@ def main():
     print(f"  저장: {filename}")
 
     print("\nGoogle Drive 업로드 중...")
-    upload_to_drive(excel_path, filename, GDRIVE_FOLDER_ID)
-
-    print("\n완료!")
+    try:
+        upload_to_drive(excel_path, filename, GDRIVE_FOLDER_ID)
+        print("\n완료!")
+    except Exception as e:
+        import traceback
+        print("\n[Drive 업로드 실패 - 상세 에러]")
+        print(traceback.format_exc())
+        raise
 
 
 if __name__ == "__main__":
