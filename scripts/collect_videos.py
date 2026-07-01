@@ -12,6 +12,13 @@ import datetime
 import tempfile
 from pathlib import Path
 
+# 로컬 실행 시 .env 파일이 있으면 자동으로 읽어옴 (GitHub Actions에는 .env가 없으므로 그냥 무시됨)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import isodate
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
