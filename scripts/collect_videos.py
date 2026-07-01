@@ -61,6 +61,9 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 # Excel 셀 문자 수 한도(32767)에 안전 마진을 둔 값
 MAX_CELL_CHARS = 32000
 
+# youtube-transcript-api >=1.0 부터 인스턴스 기반 API로 변경됨
+_YTT_API = YouTubeTranscriptApi()
+
 # ──────────────────────────────────────────────
 # API 클라이언트
 # ──────────────────────────────────────────────
@@ -176,14 +179,14 @@ def get_transcript(video_id: str) -> str:
     하나의 문자열로 합쳐 반환한다. 자막이 없으면 안내 문구를 반환한다.
     """
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = _YTT_API.list(video_id)
         try:
             transcript = transcript_list.find_transcript(["ko", "en"])
         except NoTranscriptFound:
             transcript = next(iter(transcript_list))
 
-        segments = transcript.fetch()
-        text = " ".join(seg["text"].replace("\n", " ").strip() for seg in segments if seg.get("text"))
+        fetched = transcript.fetch()
+        text = " ".join(seg.text.replace("\n", " ").strip() for seg in fetched if seg.text)
         text = " ".join(text.split())  # 중복 공백 정리
 
         if len(text) > MAX_CELL_CHARS:
