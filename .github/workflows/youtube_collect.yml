@@ -4,7 +4,7 @@ on:
   schedule:
     # KST 08:00 = UTC 23:00 (전날)
     - cron: "0 23 * * *"
-  workflow_dispatch:   # 수동 실행 허용
+  workflow_dispatch: # 수동 실행 허용
 
 jobs:
   collect:
@@ -24,7 +24,9 @@ jobs:
 
       - name: 영상 수집 실행
         env:
-          YOUTUBE_API_KEY:    ${{ secrets.YOUTUBE_API_KEY }}
-          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
-          GDRIVE_FOLDER_ID:   ${{ secrets.GDRIVE_FOLDER_ID }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python scripts/collect_videos.py
