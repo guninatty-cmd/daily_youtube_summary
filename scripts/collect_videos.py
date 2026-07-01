@@ -2,6 +2,7 @@
 """
 YouTube 영상 수집기
 - 지정된 채널에서 전날 자정~당일 자정(KST) 사이 업로드된 영상(Shorts 제외) 수집
+- 각 영상의 자막(스크립트)을 함께 추출
 - Excel로 저장 후 Google Drive에 업로드 (OAuth 리프레시 토큰 사용)
 """
 
@@ -20,14 +21,21 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable,
+)
+
 # ──────────────────────────────────────────────
 # 환경변수 (GitHub Secrets에서 주입)
 # ──────────────────────────────────────────────
-YOUTUBE_API_KEY     = os.environ["YOUTUBE_API_KEY"]
-GDRIVE_CLIENT_ID    = os.environ["GDRIVE_CLIENT_ID"]
+YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
+GDRIVE_CLIENT_ID = os.environ["GDRIVE_CLIENT_ID"]
 GDRIVE_CLIENT_SECRET = os.environ["GDRIVE_CLIENT_SECRET"]
 GDRIVE_REFRESH_TOKEN = os.environ["GDRIVE_REFRESH_TOKEN"]
-GDRIVE_FOLDER_ID    = os.environ.get("GDRIVE_FOLDER_ID", "")
+GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID", "")
 
 # ──────────────────────────────────────────────
 # 수집 대상 채널 핸들 (@ 제외)
@@ -50,6 +58,8 @@ CHANNEL_HANDLES = [
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
+# Excel 셀 문자 수 한도(32767)에 안전 마진을 둔 값
+MAX_CELL_CHARS = 32000
 
 # ──────────────────────────────────────────────
 # API 클라이언트
@@ -121,8 +131,8 @@ def fetch_recent_video_ids(yt, playlist_id: str, since: datetime.datetime, until
                 break
             if pub < until:
                 results.append({
-                    "id":           item["contentDetails"]["videoId"],
-                    "title":        item["snippet"]["title"],
+                    "id": item["contentDetails"]["videoId"],
+                    "title": item["snippet"]["title"],
                     "published_at": pub,
                 })
 
@@ -158,13 +168,44 @@ def is_short(duration_secs: int) -> bool:
 
 
 # ──────────────────────────────────────────────
+# 자막(스크립트) 추출
+# ──────────────────────────────────────────────
+def get_transcript(video_id: str) -> str:
+    """
+    자막을 한국어 우선(없으면 영어, 그것도 없으면 사용 가능한 아무 자막)으로 가져와
+    하나의 문자열로 합쳐 반환한다. 자막이 없으면 안내 문구를 반환한다.
+    """
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        try:
+            transcript = transcript_list.find_transcript(["ko", "en"])
+        except NoTranscriptFound:
+            transcript = next(iter(transcript_list))
+
+        segments = transcript.fetch()
+        text = " ".join(seg["text"].replace("\n", " ").strip() for seg in segments if seg.get("text"))
+        text = " ".join(text.split())  # 중복 공백 정리
+
+        if len(text) > MAX_CELL_CHARS:
+            text = text[:MAX_CELL_CHARS] + " ...(생략)"
+
+        return text or "(자막 없음)"
+
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
+        return "(자막 없음)"
+    except Exception as e:
+        print(f"    [자막 추출 실패] {video_id}: {e}")
+        return "(자막 추출 실패)"
+
+
+# ──────────────────────────────────────────────
 # 수집 메인
 # ──────────────────────────────────────────────
 def collect():
     yt = get_youtube()
     now_kst = datetime.datetime.now(KST)
 
-    today_midnight     = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_midnight = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday_midnight = today_midnight - datetime.timedelta(days=1)
 
     since = yesterday_midnight.astimezone(datetime.timezone.utc)
@@ -196,15 +237,19 @@ def collect():
                 continue
 
             pub_kst = v["published_at"].astimezone(KST)
-            all_videos.append({
-                "channel_name":   ch_name,
-                "channel_handle": f"@{handle}",
-                "title":          v["title"],
-                "url":            f"https://www.youtube.com/watch?v={v['id']}",
-                "published_kst":  pub_kst.strftime("%Y-%m-%d %H:%M:%S"),
-                "duration_sec":   secs,
-            })
             print(f"  + {v['title'][:55]}")
+            print("    자막 추출 중...")
+            script_text = get_transcript(v["id"])
+
+            all_videos.append({
+                "channel_name": ch_name,
+                "channel_handle": f"@{handle}",
+                "title": v["title"],
+                "url": f"https://www.youtube.com/watch?v={v['id']}",
+                "published_kst": pub_kst.strftime("%Y-%m-%d %H:%M:%S"),
+                "duration_sec": secs,
+                "script": script_text,
+            })
 
     print(f"\n총 {len(all_videos)}개 영상 수집 완료")
     return all_videos, date_label
@@ -218,17 +263,17 @@ def build_excel(videos: list, date_label: str):
     ws = wb.active
     ws.title = date_label
 
-    h_fill  = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    h_font  = Font(bold=True, color="FFFFFF", size=11)
+    h_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    h_font = Font(bold=True, color="FFFFFF", size=11)
     h_align = Alignment(horizontal="center", vertical="center")
 
-    headers    = ["채널명", "채널 핸들", "영상 제목", "링크", "업로드 시간 (KST)", "재생시간(초)"]
-    col_widths = [22, 18, 62, 48, 22, 12]
+    headers = ["채널명", "채널 핸들", "영상 제목", "링크", "업로드 시간 (KST)", "재생시간(초)", "스크립트(자막)"]
+    col_widths = [22, 18, 62, 48, 22, 12, 80]
 
     for c, (h, w) in enumerate(zip(headers, col_widths), 1):
         cell = ws.cell(row=1, column=c, value=h)
-        cell.fill      = h_fill
-        cell.font      = h_font
+        cell.fill = h_fill
+        cell.font = h_font
         cell.alignment = h_align
         ws.column_dimensions[get_column_letter(c)].width = w
 
@@ -236,6 +281,7 @@ def build_excel(videos: list, date_label: str):
 
     even_fill = PatternFill(start_color="EBF3FB", end_color="EBF3FB", fill_type="solid")
     link_font = Font(color="0563C1", underline="single")
+    wrap_align = Alignment(vertical="top", wrap_text=True)
 
     for r, v in enumerate(videos, 2):
         ws.cell(r, 1, v["channel_name"])
@@ -245,13 +291,15 @@ def build_excel(videos: list, date_label: str):
         cell_url.font = link_font
         ws.cell(r, 5, v["published_kst"])
         ws.cell(r, 6, v["duration_sec"])
+        cell_script = ws.cell(r, 7, v["script"])
+        cell_script.alignment = wrap_align
 
         if r % 2 == 0:
-            for c in range(1, 7):
+            for c in range(1, 8):
                 ws.cell(r, c).fill = even_fill
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:F{len(videos) + 1}"
+    ws.auto_filter.ref = f"A1:G{len(videos) + 1}"
 
     filename = f"{date_label}_유튜브영상.xlsx"
     out_path = Path(tempfile.mkdtemp()) / filename
@@ -286,7 +334,7 @@ def upload_to_drive(file_path: Path, filename: str, folder_id: str = ""):
     if not folder_id:
         folder_id = get_or_create_folder(drive, "유튜브 영상 수집")
 
-    meta  = {"name": filename, "parents": [folder_id]}
+    meta = {"name": filename, "parents": [folder_id]}
     media = MediaFileUpload(
         str(file_path),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
