@@ -3,4 +3,4 @@ google-auth>=2.23.0
 google-auth-oauthlib>=1.0.0
 openpyxl>=3.1.2
 isodate>=0.6.1
-youtube-transcript-api>=0.6.2
+youtube-transcript-api==1.2.4
