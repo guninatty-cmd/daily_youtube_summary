@@ -1,9 +1,9 @@
 name: YouTube 영상 수집
 
 on:
-  schedule:
-    # KST 08:00 = UTC 23:00 (전날)
-    - cron: "0 23 * * *"
+  # 자막 추출은 GitHub Actions의 클라우드 IP에서 유튜브가 차단해서
+  # 매일 자동(cron) 실행은 끄고, 필요할 때 수동(workflow_dispatch)으로만 실행합니다.
+  # 실제 일일 수집(자막 포함)은 로컬 PC에서 scripts/collect_videos.py를 직접 실행하세요.
   workflow_dispatch: # 수동 실행 허용
 
 jobs:
