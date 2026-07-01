@@ -167,7 +167,7 @@ def get_durations(yt, video_ids: list) -> dict:
 
 
 def is_short(duration_secs: int) -> bool:
-    return duration_secs <= 60
+    return duration_secs <= 100
 
 
 # ──────────────────────────────────────────────
